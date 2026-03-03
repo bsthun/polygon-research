@@ -70,10 +70,10 @@ pub async fn handle(
     let body_str = String::from_utf8_lossy(&body_bytes);
 
     // * extract model for logging
-    let model = extract_model(&body_str);
+    let _model = extract_model(&body_str);
     let _content = extract_content(&body_str);
 
-    // * strip /api prefix to get /v1/... path
+    // * strip prefix
     let path_v1 = path.strip_prefix("/api").unwrap_or(&path);
 
     // * determine upstream endpoint based on path
@@ -102,11 +102,6 @@ pub async fn handle(
     };
     let new_uri = format!("{}{}", target_base, path_suffix);
 
-    println!("Proxying to: {}", new_uri);
-    if let Some(ref m) = model {
-        println!("Model: {}", m);
-    }
-
     // * create http client
     let client = reqwest::Client::new();
 
@@ -120,12 +115,10 @@ pub async fn handle(
         .unwrap();
 
     // * send request to upstream
-    println!("Sending request to upstream...");
     match client.execute(proxy_req).await {
         Ok(proxy_res) => {
             let status = StatusCode::from_u16(proxy_res.status().as_u16())
                 .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-            println!("Upstream status: {}", status);
 
             // * build response
             let mut builder = Response::builder().status(status);
@@ -145,7 +138,7 @@ pub async fn handle(
                 .unwrap_or("");
 
             if content_type.contains("text/event-stream") || content_type.contains("stream") {
-                // * streaming response - map bytes to Frame, convert error to Infallible
+                // * streaming response
                 use futures_util::stream::StreamExt;
                 let stream = proxy_res.bytes_stream().map(|chunk| {
                     chunk
@@ -158,12 +151,10 @@ pub async fn handle(
             } else {
                 // * non-streaming response
                 let body_bytes = proxy_res.bytes().await.unwrap_or_else(|_| Bytes::new());
-                println!("Upstream response body length: {}", body_bytes.len());
                 Ok(builder.body(box_body(body_bytes)).unwrap())
             }
         }
         Err(e) => {
-            println!("Proxy error: {}", e);
             let mut res = Response::new(box_body(format!("proxy error: {}", e)));
             *res.status_mut() = StatusCode::BAD_GATEWAY;
             Ok(res)
