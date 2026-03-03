@@ -30,7 +30,7 @@ pub struct ClickHouseConfig {
 }
 
 fn default_node_id() -> u8 {
-    1
+    0
 }
 
 impl Config {

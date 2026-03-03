@@ -40,7 +40,9 @@ pub async fn handle(
 
     // * prefix filtering
     if !path.starts_with("/api/v1/") {
-        return Ok(Response::new(empty_body()));
+        let mut res = Response::new(empty_body());
+        *res.status_mut() = StatusCode::NOT_IMPLEMENTED;
+        return Ok(res)
     }
 
     // * validate api key

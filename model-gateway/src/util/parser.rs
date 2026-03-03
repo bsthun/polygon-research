@@ -1,5 +1,3 @@
-//! Parser module for extracting information from request bodies
-
 /// Extracts the model name from a request body.
 ///
 /// # Arguments

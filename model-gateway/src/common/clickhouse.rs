@@ -4,7 +4,7 @@ use clickhouse::Client;
 use serde::Serialize;
 use std::sync::Arc;
 
-/// Query log entry for storing in ClickHouse (without id - used by handler)
+/// Query log entry for storing in ClickHouse
 #[derive(Debug, Clone, Serialize, clickhouse::Row)]
 pub struct QueryLog {
     pub id: u64,
