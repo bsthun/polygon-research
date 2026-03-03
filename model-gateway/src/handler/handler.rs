@@ -329,7 +329,7 @@ fn extract_key_id(authorization: &String) -> String {
 fn parse_sse_events(response: &str) -> (String, u64, u64, u64) {
     let mut input_tokens: u64 = 0;
     let mut output_tokens: u64 = 0;
-    let cache_tokens: u64 = 0;
+    let mut cache_tokens: u64 = 0;
 
     let mut message_id = String::new();
     let mut message_type = String::new();
@@ -381,6 +381,9 @@ fn parse_sse_events(response: &str) -> (String, u64, u64, u64) {
                     // * extract initial usage
                     if let Some(usage) = msg.get("usage").and_then(|v| v.as_object()) {
                         input_tokens = usage.get("input_tokens")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0);
+                        cache_tokens = usage.get("cache_read_input_tokens")
                             .and_then(|v| v.as_u64())
                             .unwrap_or(0);
                     }
@@ -440,6 +443,17 @@ fn parse_sse_events(response: &str) -> (String, u64, u64, u64) {
                     output_tokens = usage.get("output_tokens")
                         .and_then(|v| v.as_u64())
                         .unwrap_or(0);
+                    if input_tokens == 0 {
+                        input_tokens = usage.get("input_tokens")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0);
+                    }
+                    // * cache tokens can also be in message_delta
+                    if cache_tokens == 0 {
+                        cache_tokens = usage.get("cache_read_input_tokens")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0);
+                    }
                 }
                 if let Some(delta) = event_json.get("delta").and_then(|v| v.as_object()) {
                     message_stop_reason = delta.get("stop_reason")
