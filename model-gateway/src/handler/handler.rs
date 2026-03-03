@@ -157,67 +157,103 @@ pub async fn handle(
                 .unwrap_or("");
 
             if content_type.contains("text/event-stream") || content_type.contains("stream") {
-                // * streaming response - collect for logging first
+                // * streaming response - stream to client while collecting for logging
                 use futures_util::stream::StreamExt;
 
-                // * collect all bytes from the stream
-                let mut full_response = Vec::new();
-                let mut stream = proxy_res.bytes_stream();
-                while let Some(chunk) = stream.next().await {
-                    if let Ok(bytes) = chunk {
-                        full_response.extend_from_slice(&bytes);
-                    }
-                }
-
-                // * parse and log to clickhouse
+                // * track timing in microseconds for precision
+                let start_time = std::time::Instant::now();
+                let mut first_token_time: Option<u64> = None;
                 let clickhouse = state.clickhouse.clone();
-                if clickhouse.is_some() {
-                    let response_str = String::from_utf8_lossy(&full_response);
-                    let (final_json, input_token, output_token, cache_token) =
-                        parse_sse_events(&response_str);
 
-                    let query_log = QueryLog {
-                        id: 0,
-                        key_id: extract_key_id(&authorization),
-                        model: model.clone(),
-                        content: content.clone(),
-                        request_payload: body_str.to_string(),
-                        response_payload: final_json,
-                        input_token,
-                        output_token,
-                        cache_token,
-                    };
+                // * create a channel to stream to client while collecting
+                let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::convert::Infallible>>(100);
 
-                    let ch = clickhouse.unwrap();
-                    let client = ch.lock().await;
-                    if let Err(e) = client.insert_log(&query_log).await {
-                        log::error!("failed to insert clickhouse log: {}", e);
+                // * spawn task to collect stream and log to clickhouse
+                let body_str_clone = body_str.to_string();
+                let model_clone = model.clone();
+                let content_clone = content.clone();
+                let auth_clone = authorization.clone();
+
+                tokio::spawn(async move {
+                    let mut full_response = Vec::new();
+                    let mut stream = proxy_res.bytes_stream();
+
+                    while let Some(chunk) = stream.next().await {
+                        if let Ok(bytes) = chunk {
+                            // * check if this chunk contains content_block_start
+                            let chunk_str = String::from_utf8_lossy(&bytes);
+                            if first_token_time.is_none() && chunk_str.contains("content_block_start") {
+                                first_token_time = Some(start_time.elapsed().as_micros() as u64);
+                            }
+
+                            // * send to client
+                            let _ = tx.send(Ok(bytes.clone())).await;
+                            full_response.extend_from_slice(&bytes);
+                        }
                     }
-                }
 
-                // * create stream from collected bytes for response
+                    let duration_completed = start_time.elapsed().as_micros() as u64;
+
+                    // * log to clickhouse after stream completes
+                    if let Some(clickhouse) = clickhouse {
+                        let response_str = String::from_utf8_lossy(&full_response);
+                        let (final_json, input_token, output_token, cache_token) =
+                            parse_sse_events(&response_str);
+
+                        let request_value: serde_json::Value = serde_json::from_str(&body_str_clone).unwrap_or(serde_json::Value::Object(Default::default()));
+                        let response_value: serde_json::Value = serde_json::from_str(&final_json).unwrap_or(serde_json::Value::Object(Default::default()));
+
+                        let query_log = QueryLog {
+                            id: 0,
+                            key_id: extract_key_id(&auth_clone),
+                            model: model_clone,
+                            content: content_clone,
+                            request_payload: request_value,
+                            response_payload: response_value,
+                            duration_first_token: first_token_time.unwrap_or(0),
+                            duration_completed,
+                            input_token,
+                            output_token,
+                            cache_token,
+                        };
+
+                        let client = clickhouse.lock().await;
+                        if let Err(e) = client.insert_log(&query_log).await {
+                            log::error!("failed to insert clickhouse log: {}", e);
+                        }
+                    }
+                });
+
+                // * create stream from channel for response
                 use http_body_util::BodyExt;
-                let stream = futures_util::stream::iter(vec![Ok::<_, Infallible>(Bytes::from(full_response))])
+                let stream = tokio_stream::wrappers::ReceiverStream::new(rx)
                     .map(|b| b.map(Frame::data));
                 let body = BodyExt::boxed(StreamBody::new(stream));
 
                 Ok(builder.body(body).unwrap())
             } else {
                 // * non-streaming response
+                let start_time = std::time::Instant::now();
                 let response_body = proxy_res.bytes().await.unwrap_or_else(|_| Bytes::new());
+                let duration_completed = start_time.elapsed().as_millis() as u64;
 
                 // * log to clickhouse if configured
                 if let Some(clickhouse) = &state.clickhouse {
                     let (input_token, output_token, cache_token) = extract_tokens(&response_body);
                     let key_id = extract_key_id(&authorization);
 
+                    let request_value: serde_json::Value = serde_json::from_str(&body_str).unwrap_or(serde_json::Value::Object(Default::default()));
+                    let response_value: serde_json::Value = serde_json::from_str(&String::from_utf8_lossy(&response_body)).unwrap_or(serde_json::Value::Object(Default::default()));
+
                     let query_log = QueryLog {
                         id: 0,
                         key_id,
                         model,
                         content,
-                        request_payload: body_str.to_string(),
-                        response_payload: String::from_utf8_lossy(&response_body).to_string(),
+                        request_payload: request_value,
+                        response_payload: response_value,
+                        duration_first_token: 0,
+                        duration_completed,
                         input_token,
                         output_token,
                         cache_token,
@@ -227,6 +263,9 @@ pub async fn handle(
                     let client = clickhouse.lock().await;
                     if let Err(e) = client.insert_log(&query_log).await {
                         log::error!("failed to insert clickhouse log: {}", e);
+                        let mut res = Response::new(box_body(format!("clickhouse insert error: {}", e)));
+                        *res.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
+                        return Ok(res);
                     }
                 }
 

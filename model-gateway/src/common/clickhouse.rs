@@ -5,31 +5,19 @@ use serde::Serialize;
 use std::sync::Arc;
 
 /// Query log entry for storing in ClickHouse
-#[derive(Debug, Clone, Serialize, clickhouse::Row)]
+#[derive(Debug, Clone, Serialize)]
 pub struct QueryLog {
     pub id: u64,
     pub key_id: String,
     pub model: String,
     pub content: String,
-    pub request_payload: String,
-    pub response_payload: String,
+    pub request_payload: serde_json::Value,
+    pub response_payload: serde_json::Value,
+    pub duration_first_token: u64,
+    pub duration_completed: u64,
     pub input_token: u64,
     pub output_token: u64,
     pub cache_token: u64,
-}
-
-/// Query log entry with id for ClickHouse insert
-#[derive(Debug, Clone, Serialize, clickhouse::Row)]
-struct QueryLogWithId {
-    id: u64,
-    key_id: String,
-    model: String,
-    content: String,
-    request_payload: String,
-    response_payload: String,
-    input_token: u64,
-    output_token: u64,
-    cache_token: u64,
 }
 
 /// ClickHouse client wrapper
@@ -64,6 +52,8 @@ impl ClickHouseClient {
                     content String,
                     request_payload String,
                     response_payload String,
+                    duration_first_token UInt64,
+                    duration_completed UInt64,
                     input_token UInt64,
                     output_token UInt64,
                     cache_token UInt64
@@ -77,27 +67,30 @@ impl ClickHouseClient {
         Ok(())
     }
 
-    /// Inserts a query log entry using insert API
+    /// Inserts a query log entry using query API
     pub async fn insert_log(&self, log: &QueryLog) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         // * generate new ID using SequenceId
         let new_id = self.sequence_id.next_id();
 
-        // * create a new QueryLog with the calculated id
-        let log_with_id = QueryLogWithId {
-            id: new_id,
-            key_id: log.key_id.clone(),
-            model: log.model.clone(),
-            content: log.content.clone(),
-            request_payload: log.request_payload.clone(),
-            response_payload: log.response_payload.clone(),
-            input_token: log.input_token,
-            output_token: log.output_token,
-            cache_token: log.cache_token,
-        };
+        // * serialize JSON values to strings
+        let request_json = serde_json::to_string(&log.request_payload).unwrap_or_default();
+        let response_json = serde_json::to_string(&log.response_payload).unwrap_or_default();
 
-        let mut insert = self.client.insert("query_log")?;
-        insert.write(&log_with_id).await?;
-        insert.end().await?;
+        self.client
+            .query("INSERT INTO query_log VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+            .bind(new_id)
+            .bind(log.key_id.as_str())
+            .bind(log.model.as_str())
+            .bind(log.content.as_str())
+            .bind(request_json.as_str())
+            .bind(response_json.as_str())
+            .bind(log.duration_first_token)
+            .bind(log.duration_completed)
+            .bind(log.input_token)
+            .bind(log.output_token)
+            .bind(log.cache_token)
+            .execute()
+            .await?;
 
         Ok(())
     }
