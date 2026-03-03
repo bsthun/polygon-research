@@ -44,6 +44,7 @@ mod tests {
                 anthropic_endpoint: "https://api.example.com/anthropic".to_string(),
                 key: "upstream-key".to_string(),
             }],
+            postgres: None,
             clickhouse: Some(ClickHouseConfig {
                 url: "http://localhost:8123".to_string(),
                 database: "test".to_string(),

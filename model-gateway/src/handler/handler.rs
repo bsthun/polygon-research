@@ -1,7 +1,9 @@
-use crate::common::clickhouse::{ClickHouseClient, QueryLog};
+use crate::common::clickhouse::ClickHouseClient;
 use crate::common::config::Config;
+use crate::database::clickhouse::query_log::{self, QueryLog};
 use crate::util::parser::{extract_content, extract_model};
 use crate::handler::validation::validate_api_key;
+use sea_orm::DatabaseConnection;
 
 use bytes::Bytes;
 use http_body::Frame;
@@ -17,6 +19,8 @@ use tokio::sync::Mutex;
 #[derive(Clone)]
 pub struct State {
     pub config: Config,
+    #[allow(dead_code)]
+    pub postgres: Option<DatabaseConnection>,
     pub clickhouse: Option<Arc<Mutex<ClickHouseClient>>>,
 }
 
@@ -218,7 +222,7 @@ pub async fn handle(
                         };
 
                         let client = clickhouse.lock().await;
-                        if let Err(e) = client.insert_log(&query_log).await {
+                        if let Err(e) = query_log::insert_log(&*client, &query_log).await {
                             log::error!("failed to insert clickhouse log: {}", e);
                         }
                     }
@@ -261,7 +265,7 @@ pub async fn handle(
 
                     let clickhouse = clickhouse.clone();
                     let client = clickhouse.lock().await;
-                    if let Err(e) = client.insert_log(&query_log).await {
+                    if let Err(e) = query_log::insert_log(&*client, &query_log).await {
                         log::error!("failed to insert clickhouse log: {}", e);
                         let mut res = Response::new(box_body(format!("clickhouse insert error: {}", e)));
                         *res.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;

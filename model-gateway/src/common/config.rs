@@ -6,10 +6,12 @@ pub struct Config {
     #[serde(rename = "apiKey")]
     pub api_key: String,
     pub upstreams: Vec<Upstream>,
+    pub postgres: Option<PostgresConfig>,
     pub clickhouse: Option<ClickHouseConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
 pub struct Upstream {
     pub name: String,
     #[serde(rename = "openaiEndpoint")]
@@ -17,6 +19,11 @@ pub struct Upstream {
     #[serde(rename = "anthropicEndpoint")]
     pub anthropic_endpoint: String,
     pub key: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct PostgresConfig {
+    pub dsn: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -39,4 +46,11 @@ impl Config {
         let config: Config = serde_yaml::from_str(&content)?;
         Ok(config)
     }
+}
+
+/// Loads config from environment or default path
+pub fn init() -> Config {
+    let path = std::env::var("GATEWAY_CONFIG_PATH")
+        .unwrap_or_else(|_| ".local/config.yml".to_string());
+    Config::load(&path).expect("failed to load config")
 }
