@@ -3,11 +3,11 @@ use crate::util::parser::{extract_content, extract_model};
 use crate::handler::validation::validate_api_key;
 
 use bytes::Bytes;
+use http_body::Frame;
 use http_body_util::{combinators::BoxBody, BodyExt, Empty, Full, StreamBody};
 use hyper::body::Incoming;
 use hyper::{Method, Request, Response, StatusCode};
 use std::convert::Infallible;
-use tokio_stream::StreamExt;
 
 /// State shared across requests
 #[derive(Clone)]
@@ -16,42 +16,16 @@ pub struct State {
 }
 
 /// Creates a boxed HTTP body from a chunk of data.
-///
-/// # Type Parameters
-/// * `T` - Any type that can be converted to `Bytes`
-///
-/// # Arguments
-/// * `chunk` - The data to wrap in a boxed body
-///
-/// # Returns
-/// A boxed HTTP body
 pub fn box_body<T: Into<Bytes>>(chunk: T) -> BoxBody<Bytes, Infallible> {
     Full::new(chunk.into()).boxed()
 }
 
 /// Creates an empty boxed HTTP body.
-///
-/// # Returns
-/// An empty boxed HTTP body
 pub fn empty_body() -> BoxBody<Bytes, Infallible> {
     Empty::new().boxed()
 }
 
 /// Handles incoming HTTP requests and proxies them to the appropriate upstream.
-///
-/// # Arguments
-/// * `req` - The incoming HTTP request
-/// * `state` - Application state containing configuration
-///
-/// # Returns
-/// A Result containing the HTTP response or an Infallible error
-///
-/// # Behavior
-/// 1. Validates API key from Authorization header
-/// 2. Extracts model and content from request body for logging
-/// 3. Routes to appropriate upstream based on path
-/// 4. Forwards request to upstream with proper authentication
-/// 5. Returns upstream response to client
 pub async fn handle(
     req: Request<Incoming>,
     state: State,
@@ -105,21 +79,21 @@ pub async fn handle(
     // * determine upstream endpoint based on path
     let upstream = &state.config.upstreams[0];
     let (target_base, auth_header, path_suffix) = if path_v1.starts_with("/v1/messages") {
-        // * anthropic: /api/v1/messages -> anthropic endpoint + /v1/messages
+        // * anthropic
         (
             upstream.anthropic_endpoint.clone(),
             format!("Bearer {}", upstream.key),
             path_v1.to_string(),
         )
     } else if path_v1.starts_with("/v1/responses") {
-        // * openai: /api/v1/responses -> openai endpoint + /v1/responses
+        // * openai
         (
             upstream.openai_endpoint.clone(),
             format!("Bearer {}", upstream.key),
             path_v1.strip_prefix("/v1").unwrap_or(path_v1).to_string(),
         )
     } else {
-        // * openai: /api/v1/chat/completions -> openai endpoint + /v1/chat/completions
+        // * openai
         (
             upstream.openai_endpoint.clone(),
             format!("Bearer {}", upstream.key),
@@ -163,11 +137,30 @@ pub async fn handle(
                 }
             }
 
-            // * get body and forward
-            let body_bytes = proxy_res.bytes().await.unwrap_or_else(|_| Bytes::new());
-            println!("Upstream response body length: {}", body_bytes.len());
+            // * check if streaming response
+            let content_type = proxy_res
+                .headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("");
 
-            Ok(builder.body(box_body(body_bytes)).unwrap())
+            if content_type.contains("text/event-stream") || content_type.contains("stream") {
+                // * streaming response - map bytes to Frame, convert error to Infallible
+                use futures_util::stream::StreamExt;
+                let stream = proxy_res.bytes_stream().map(|chunk| {
+                    chunk
+                        .map(Frame::data)
+                        .map_err(|_e| unreachable!("stream error should not happen"))
+                });
+                use http_body_util::BodyExt;
+                let body = BodyExt::boxed(StreamBody::new(stream));
+                Ok(builder.body(body).unwrap())
+            } else {
+                // * non-streaming response
+                let body_bytes = proxy_res.bytes().await.unwrap_or_else(|_| Bytes::new());
+                println!("Upstream response body length: {}", body_bytes.len());
+                Ok(builder.body(box_body(body_bytes)).unwrap())
+            }
         }
         Err(e) => {
             println!("Proxy error: {}", e);
