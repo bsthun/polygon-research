@@ -51,10 +51,21 @@ pub async fn handle(
         return Ok(res);
     }
 
-    // * only allow POST method
-    if method != Method::POST {
+    // * allowed GET paths
+    let get_allowed_paths = ["/api/v1/models", "/v1/models"];
+    let is_get_allowed = method == Method::GET && get_allowed_paths.iter().any(|p| path.contains(p));
+
+    // * check method
+    if method != Method::POST && !is_get_allowed {
         let mut res = Response::new(empty_body());
         *res.status_mut() = StatusCode::METHOD_NOT_ALLOWED;
+        return Ok(res);
+    }
+
+    // * handle get requests
+    if is_get_allowed {
+        let mut res = Response::new(empty_body());
+        *res.status_mut() = StatusCode::OK;
         return Ok(res);
     }
 
