@@ -7,7 +7,8 @@
 
 ## Code
 
-- Comment in format
+- Comment top-level function / methods in rust doc format,
+  except local block which comment in the following format:
   ```
   // * lowercase only comment expect `VaribaleName` in backticks`
   ```
