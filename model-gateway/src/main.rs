@@ -1,9 +1,9 @@
-mod config;
+mod common;
 mod handler;
-mod parser;
-mod validation;
+mod util;
 
-use handler::{handle, State};
+use common::config::Config;
+use handler::handler::{handle, State};
 
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
@@ -15,7 +15,7 @@ use tokio::net::TcpListener;
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // * load config
-    let config = config::Config::load(".local/config.yml").map_err(|e| {
+    let config = Config::load(".local/config.yml").map_err(|e: Box<dyn std::error::Error>| {
         Box::new(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
             as Box<dyn std::error::Error + Send + Sync>
     })?;

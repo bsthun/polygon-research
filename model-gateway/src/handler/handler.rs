@@ -1,12 +1,13 @@
-use crate::config::Config;
-use crate::parser::{extract_content, extract_model};
-use crate::validation::validate_api_key;
+use crate::common::config::Config;
+use crate::util::parser::{extract_content, extract_model};
+use crate::handler::validation::validate_api_key;
 
 use bytes::Bytes;
-use http_body_util::{combinators::BoxBody, BodyExt, Empty, Full};
+use http_body_util::{combinators::BoxBody, BodyExt, Empty, Full, StreamBody};
 use hyper::body::Incoming;
 use hyper::{Method, Request, Response, StatusCode};
 use std::convert::Infallible;
+use tokio_stream::StreamExt;
 
 /// State shared across requests
 #[derive(Clone)]
@@ -58,7 +59,7 @@ pub async fn handle(
     let method = req.method().clone();
     let path = req.uri().path().to_string();
 
-    // * prefix filtering - only handle /api/v1/* paths
+    // * prefix filtering
     if !path.starts_with("/api/v1/") {
         return Ok(Response::new(empty_body()));
     }
@@ -101,21 +102,29 @@ pub async fn handle(
     // * strip /api prefix to get /v1/... path
     let path_v1 = path.strip_prefix("/api").unwrap_or(&path);
 
-    // * determine upstream endpoint based on path prefix
+    // * determine upstream endpoint based on path
     let upstream = &state.config.upstreams[0];
-    let (target_base, auth_header) = if path_v1.starts_with("/v1/messages") {
-        // * anthropic
-        (upstream.anthropic_endpoint.clone(), format!("Bearer {}", upstream.key))
+    let (target_base, auth_header, path_suffix) = if path_v1.starts_with("/v1/messages") {
+        // * anthropic: /api/v1/messages -> anthropic endpoint + /v1/messages
+        (
+            upstream.anthropic_endpoint.clone(),
+            format!("Bearer {}", upstream.key),
+            path_v1.to_string(),
+        )
+    } else if path_v1.starts_with("/v1/responses") {
+        // * openai: /api/v1/responses -> openai endpoint + /v1/responses
+        (
+            upstream.openai_endpoint.clone(),
+            format!("Bearer {}", upstream.key),
+            path_v1.strip_prefix("/v1").unwrap_or(path_v1).to_string(),
+        )
     } else {
-        // * openai
-        (upstream.openai_endpoint.clone(), format!("Bearer {}", upstream.key))
-    };
-
-    // * build new uri - append path after endpoint
-    let path_suffix = if path_v1.starts_with("/v1/messages") {
-        path_v1.strip_prefix("/v1/messages").unwrap_or("")
-    } else {
-        path_v1.strip_prefix("/v1").unwrap_or(path_v1)
+        // * openai: /api/v1/chat/completions -> openai endpoint + /v1/chat/completions
+        (
+            upstream.openai_endpoint.clone(),
+            format!("Bearer {}", upstream.key),
+            path_v1.strip_prefix("/v1").unwrap_or(path_v1).to_string(),
+        )
     };
     let new_uri = format!("{}{}", target_base, path_suffix);
 
@@ -137,10 +146,12 @@ pub async fn handle(
         .unwrap();
 
     // * send request to upstream
+    println!("Sending request to upstream...");
     match client.execute(proxy_req).await {
         Ok(proxy_res) => {
             let status = StatusCode::from_u16(proxy_res.status().as_u16())
                 .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+            println!("Upstream status: {}", status);
 
             // * build response
             let mut builder = Response::builder().status(status);
@@ -153,10 +164,8 @@ pub async fn handle(
             }
 
             // * get body and forward
-            let body_bytes = match proxy_res.bytes().await {
-                Ok(b) => b,
-                Err(_) => Bytes::new(),
-            };
+            let body_bytes = proxy_res.bytes().await.unwrap_or_else(|_| Bytes::new());
+            println!("Upstream response body length: {}", body_bytes.len());
 
             Ok(builder.body(box_body(body_bytes)).unwrap())
         }

@@ -1,6 +1,6 @@
 //! Validation module for API key validation
 
-use crate::config::Config;
+use crate::common::config::Config;
 use hyper::StatusCode;
 
 /// Validates the API key from the Authorization header.
@@ -32,7 +32,7 @@ pub fn validate_api_key(authorization: &str, config: &Config) -> Result<(), Stat
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{Config, Upstream};
+    use crate::common::config::{Config, Upstream};
 
     fn test_config() -> Config {
         Config {
