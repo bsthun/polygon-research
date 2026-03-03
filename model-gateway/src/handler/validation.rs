@@ -32,7 +32,7 @@ pub fn validate_api_key(authorization: &str, config: &Config) -> Result<(), Stat
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::common::config::{Config, Upstream};
+    use crate::common::config::{ClickHouseConfig, Config, Upstream};
 
     fn test_config() -> Config {
         Config {
@@ -44,6 +44,13 @@ mod tests {
                 anthropic_endpoint: "https://api.example.com/anthropic".to_string(),
                 key: "upstream-key".to_string(),
             }],
+            clickhouse: Some(ClickHouseConfig {
+                url: "http://localhost:8123".to_string(),
+                database: "test".to_string(),
+                username: "default".to_string(),
+                password: "test".to_string(),
+                node_id: 1,
+            }),
         }
     }
 

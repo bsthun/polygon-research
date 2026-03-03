@@ -2,6 +2,7 @@ mod common;
 mod handler;
 mod util;
 
+use common::clickhouse::ClickHouseClient;
 use common::config::Config;
 use handler::handler::{handle, State};
 
@@ -10,7 +11,9 @@ use hyper::service::service_fn;
 use hyper_util::rt::TokioIo;
 use std::net::SocketAddr;
 use std::str::FromStr;
+use std::sync::Arc;
 use tokio::net::TcpListener;
+use tokio::sync::Mutex;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -28,6 +31,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     println!("OpenAI Endpoint: {}", upstream.openai_endpoint);
     println!("Anthropic Endpoint: {}", upstream.anthropic_endpoint);
 
+    // * initialize clickhouse if configured
+    let clickhouse = if let Some(clickhouse_config) = &config.clickhouse {
+        println!(
+            "ClickHouse: {} (database: {})",
+            clickhouse_config.url, clickhouse_config.database
+        );
+        let client = ClickHouseClient::new(clickhouse_config);
+        if let Err(e) = client.init_table().await {
+            eprintln!("Failed to initialize ClickHouse table: {}", e);
+        }
+        Some(Arc::new(Mutex::new(client)))
+    } else {
+        None
+    };
+
     let listen_addr = if config.listen.starts_with(':') {
         format!("0.0.0.0{}", config.listen)
     } else {
@@ -42,7 +60,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     println!("  - /api/v1/responses");
     println!("  - /api/v1/messages");
 
-    let state = State { config };
+    let state = State {
+        config,
+        clickhouse,
+    };
 
     loop {
         let (stream, remote_addr) = listener.accept().await?;

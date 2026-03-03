@@ -1,3 +1,4 @@
+use crate::common::clickhouse::{ClickHouseClient, QueryLog};
 use crate::common::config::Config;
 use crate::util::parser::{extract_content, extract_model};
 use crate::handler::validation::validate_api_key;
@@ -7,12 +8,16 @@ use http_body::Frame;
 use http_body_util::{combinators::BoxBody, BodyExt, Empty, Full, StreamBody};
 use hyper::body::Incoming;
 use hyper::{Method, Request, Response, StatusCode};
+use serde_json::Value;
 use std::convert::Infallible;
+use std::sync::Arc;
+use tokio::sync::Mutex;
 
 /// State shared across requests
 #[derive(Clone)]
 pub struct State {
     pub config: Config,
+    pub clickhouse: Option<Arc<Mutex<ClickHouseClient>>>,
 }
 
 /// Creates a boxed HTTP body from a chunk of data.
@@ -43,9 +48,10 @@ pub async fn handle(
         .headers()
         .get("authorization")
         .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
+        .unwrap_or("")
+        .to_string();
 
-    if let Err(status) = validate_api_key(authorization, &state.config) {
+    if let Err(status) = validate_api_key(&authorization, &state.config) {
         let mut res = Response::new(empty_body());
         *res.status_mut() = status;
         return Ok(res);
@@ -81,8 +87,8 @@ pub async fn handle(
     let body_str = String::from_utf8_lossy(&body_bytes);
 
     // * extract model for logging
-    let _model = extract_model(&body_str);
-    let _content = extract_content(&body_str);
+    let model = extract_model(&body_str).unwrap_or_default();
+    let content = extract_content(&body_str).unwrap_or_default();
 
     // * strip prefix
     let path_v1 = path.strip_prefix("/api").unwrap_or(&path);
@@ -149,20 +155,80 @@ pub async fn handle(
                 .unwrap_or("");
 
             if content_type.contains("text/event-stream") || content_type.contains("stream") {
-                // * streaming response
+                // * streaming response - collect for logging first
                 use futures_util::stream::StreamExt;
-                let stream = proxy_res.bytes_stream().map(|chunk| {
-                    chunk
-                        .map(Frame::data)
-                        .map_err(|_e| unreachable!("stream error should not happen"))
-                });
+
+                // * collect all bytes from the stream
+                let mut full_response = Vec::new();
+                let mut stream = proxy_res.bytes_stream();
+                while let Some(chunk) = stream.next().await {
+                    if let Ok(bytes) = chunk {
+                        full_response.extend_from_slice(&bytes);
+                    }
+                }
+
+                // * parse and log to clickhouse
+                let clickhouse = state.clickhouse.clone();
+                if clickhouse.is_some() {
+                    let response_str = String::from_utf8_lossy(&full_response);
+                    let (final_json, input_token, output_token, cache_token) =
+                        parse_sse_events(&response_str);
+
+                    let query_log = QueryLog {
+                        id: 0,
+                        key_id: extract_key_id(&authorization),
+                        model: model.clone(),
+                        content: content.clone(),
+                        request_payload: body_str.to_string(),
+                        response_payload: final_json,
+                        input_token,
+                        output_token,
+                        cache_token,
+                    };
+
+                    let ch = clickhouse.unwrap();
+                    let client = ch.lock().await;
+                    if let Err(e) = client.insert_log(&query_log).await {
+                        log::error!("failed to insert clickhouse log: {}", e);
+                    }
+                }
+
+                // * create stream from collected bytes for response
                 use http_body_util::BodyExt;
+                let stream = futures_util::stream::iter(vec![Ok::<_, Infallible>(Bytes::from(full_response))])
+                    .map(|b| b.map(Frame::data));
                 let body = BodyExt::boxed(StreamBody::new(stream));
+
                 Ok(builder.body(body).unwrap())
             } else {
                 // * non-streaming response
-                let body_bytes = proxy_res.bytes().await.unwrap_or_else(|_| Bytes::new());
-                Ok(builder.body(box_body(body_bytes)).unwrap())
+                let response_body = proxy_res.bytes().await.unwrap_or_else(|_| Bytes::new());
+
+                // * log to clickhouse if configured
+                if let Some(clickhouse) = &state.clickhouse {
+                    let (input_token, output_token, cache_token) = extract_tokens(&response_body);
+                    let key_id = extract_key_id(&authorization);
+
+                    let query_log = QueryLog {
+                        id: 0,
+                        key_id,
+                        model,
+                        content,
+                        request_payload: body_str.to_string(),
+                        response_payload: String::from_utf8_lossy(&response_body).to_string(),
+                        input_token,
+                        output_token,
+                        cache_token,
+                    };
+
+                    let clickhouse = clickhouse.clone();
+                    let client = clickhouse.lock().await;
+                    if let Err(e) = client.insert_log(&query_log).await {
+                        log::error!("failed to insert clickhouse log: {}", e);
+                    }
+                }
+
+                Ok(builder.body(box_body(response_body)).unwrap())
             }
         }
         Err(e) => {
@@ -171,4 +237,203 @@ pub async fn handle(
             Ok(res)
         }
     }
+}
+
+/// Extracts token usage from the response body
+fn extract_tokens(response_body: &Bytes) -> (u64, u64, u64) {
+    let body_str = String::from_utf8_lossy(response_body);
+    let json: Value = match serde_json::from_str(&body_str) {
+        Ok(v) => v,
+        Err(_) => return (0, 0, 0),
+    };
+
+    let usage = json.get("usage");
+    if usage.is_none() {
+        return (0, 0, 0);
+    }
+    let usage = usage.unwrap();
+
+    let input_tokens = usage
+        .get("input_tokens")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let output_tokens = usage
+        .get("output_tokens")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+
+    // * for anthropic, cache tokens are in cache_read_input_tokens
+    let cache_tokens = usage
+        .get("cache_read_input_tokens")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+
+    (input_tokens, output_tokens, cache_tokens)
+}
+
+/// Extracts key ID from the authorization header
+fn extract_key_id(authorization: &String) -> String {
+    // * remove "Bearer " prefix if present
+    authorization
+        .trim_start_matches("Bearer ")
+        .trim_start_matches("bearer ")
+        .to_string()
+}
+
+/// Parses SSE events from streaming response and reconstructs JSON
+fn parse_sse_events(response: &str) -> (String, u64, u64, u64) {
+    let mut input_tokens: u64 = 0;
+    let mut output_tokens: u64 = 0;
+    let cache_tokens: u64 = 0;
+
+    let mut message_id = String::new();
+    let mut message_type = String::new();
+    let mut message_role = String::new();
+    let mut message_model = String::new();
+    let mut message_stop_reason: Option<String> = None;
+    let mut content_blocks: Vec<Value> = Vec::new();
+    let mut current_block_text = String::new();
+    let mut current_block_type = String::new();
+    let mut current_block_thinking = String::new();
+    let mut current_block_signature = String::new();
+
+    for line in response.lines() {
+        let line = line.trim();
+        if !line.starts_with("data: ") {
+            continue;
+        }
+
+        let data = line.strip_prefix("data: ").unwrap_or("");
+        let event_json: Value = match serde_json::from_str(data) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+
+        let event_type = event_json.get("type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+
+        match event_type {
+            "message_start" => {
+                if let Some(msg) = event_json.get("message").and_then(|v| v.as_object()) {
+                    message_id = msg.get("id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    message_type = msg.get("type")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    message_role = msg.get("role")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    message_model = msg.get("model")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+
+                    // * extract initial usage
+                    if let Some(usage) = msg.get("usage").and_then(|v| v.as_object()) {
+                        input_tokens = usage.get("input_tokens")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0);
+                    }
+                }
+            }
+            "content_block_start" => {
+                // * reset current block
+                current_block_text = String::new();
+                current_block_thinking = String::new();
+                current_block_signature = String::new();
+
+                if let Some(block) = event_json.get("content_block").and_then(|v| v.as_object()) {
+                    current_block_type = block.get("type")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                }
+            }
+            "content_block_delta" => {
+                if let Some(delta) = event_json.get("delta").and_then(|v| v.as_object()) {
+                    if let Some(text) = delta.get("text").and_then(|v| v.as_str()) {
+                        current_block_text.push_str(text);
+                    }
+                    if let Some(thinking) = delta.get("thinking").and_then(|v| v.as_str()) {
+                        current_block_thinking.push_str(thinking);
+                    }
+                    if let Some(sig) = delta.get("signature").and_then(|v| v.as_str()) {
+                        current_block_signature.push_str(sig);
+                    }
+                }
+            }
+            "content_block_stop" => {
+                // * build the content block
+                let mut block_obj = serde_json::Map::new();
+                block_obj.insert("type".to_string(), Value::String(current_block_type.clone()));
+
+                if !current_block_thinking.is_empty() {
+                    block_obj.insert("thinking".to_string(), Value::String(current_block_thinking.clone()));
+                }
+                if !current_block_signature.is_empty() {
+                    block_obj.insert("signature".to_string(), Value::String(current_block_signature.clone()));
+                }
+                if !current_block_text.is_empty() {
+                    block_obj.insert("text".to_string(), Value::String(current_block_text.clone()));
+                }
+
+                content_blocks.push(Value::Object(block_obj));
+
+                // * reset
+                current_block_text = String::new();
+                current_block_thinking = String::new();
+                current_block_signature = String::new();
+            }
+            "message_delta" => {
+                // * extract final usage
+                if let Some(usage) = event_json.get("usage").and_then(|v| v.as_object()) {
+                    output_tokens = usage.get("output_tokens")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                }
+                if let Some(delta) = event_json.get("delta").and_then(|v| v.as_object()) {
+                    message_stop_reason = delta.get("stop_reason")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
+                }
+            }
+            "message_stop" => {
+                // * done
+            }
+            _ => {}
+        }
+    }
+
+    // * build final JSON
+    let mut response_obj = serde_json::Map::new();
+    response_obj.insert("id".to_string(), Value::String(message_id));
+    response_obj.insert("type".to_string(), Value::String(message_type));
+    response_obj.insert("role".to_string(), Value::String(message_role));
+    response_obj.insert("model".to_string(), Value::String(message_model));
+
+    if !content_blocks.is_empty() {
+        response_obj.insert("content".to_string(), Value::Array(content_blocks));
+    }
+
+    if let Some(reason) = message_stop_reason {
+        response_obj.insert("stop_reason".to_string(), Value::String(reason));
+    }
+
+    // * build usage object
+    let mut usage_obj = serde_json::Map::new();
+    usage_obj.insert("input_tokens".to_string(), Value::Number(input_tokens.into()));
+    usage_obj.insert("output_tokens".to_string(), Value::Number(output_tokens.into()));
+    if cache_tokens > 0 {
+        usage_obj.insert("cache_read_input_tokens".to_string(), Value::Number(cache_tokens.into()));
+    }
+    response_obj.insert("usage".to_string(), Value::Object(usage_obj));
+
+    let final_json = serde_json::to_string(&Value::Object(response_obj)).unwrap_or_default();
+
+    (final_json, input_tokens, output_tokens, cache_tokens)
 }

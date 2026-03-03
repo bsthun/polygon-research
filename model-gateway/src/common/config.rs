@@ -6,6 +6,7 @@ pub struct Config {
     #[serde(rename = "apiKey")]
     pub api_key: String,
     pub upstreams: Vec<Upstream>,
+    pub clickhouse: Option<ClickHouseConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -16,6 +17,20 @@ pub struct Upstream {
     #[serde(rename = "anthropicEndpoint")]
     pub anthropic_endpoint: String,
     pub key: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ClickHouseConfig {
+    pub url: String,
+    pub database: String,
+    pub username: String,
+    pub password: String,
+    #[serde(default = "default_node_id")]
+    pub node_id: u8,
+}
+
+fn default_node_id() -> u8 {
+    1
 }
 
 impl Config {
