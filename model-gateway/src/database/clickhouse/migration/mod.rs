@@ -1,4 +1,5 @@
 use crate::common::clickhouse::ClickHouseClient;
+use clickhouse::Client;
 
 mod m20250209_000000_create_query_log;
 
@@ -9,6 +10,17 @@ pub struct Migrator;
 impl Migrator {
     /// Runs pending migrations
     pub async fn up(client: &ClickHouseClient) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        // * create database using `default` context so we don't fail if it doesn't exist yet
+        let bootstrap = Client::default()
+            .with_url(&client.url)
+            .with_user(&client.username)
+            .with_password(&client.password);
+
+        bootstrap
+            .query(&format!("CREATE DATABASE IF NOT EXISTS `{}`", client.database))
+            .execute()
+            .await?;
+
         // Create migrations table first if not exists
         client.client
             .query(

@@ -187,7 +187,7 @@ pub async fn handle(
                             // * check if this chunk contains content_block_start
                             let chunk_str = String::from_utf8_lossy(&bytes);
                             if first_token_time.is_none() && chunk_str.contains("content_block_start") {
-                                first_token_time = Some(start_time.elapsed().as_micros() as u64);
+                                first_token_time = Some(start_time.elapsed().as_millis() as u64);
                             }
 
                             // * send to client
@@ -196,7 +196,7 @@ pub async fn handle(
                         }
                     }
 
-                    let duration_completed = start_time.elapsed().as_micros() as u64;
+                    let duration_completed = start_time.elapsed().as_millis() as u64;
 
                     // * log to clickhouse after stream completes
                     if let Some(clickhouse) = clickhouse {

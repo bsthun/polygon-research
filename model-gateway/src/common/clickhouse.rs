@@ -7,6 +7,10 @@ use std::sync::Arc;
 pub struct ClickHouseClient {
     pub(crate) client: Client,
     pub(crate) sequence_id: Arc<SequenceId>,
+    pub(crate) database: String,
+    pub(crate) url: String,
+    pub(crate) username: String,
+    pub(crate) password: String,
 }
 
 impl ClickHouseClient {
@@ -20,7 +24,14 @@ impl ClickHouseClient {
 
         let sequence_id = Arc::new(SequenceId::with_node_id(config.node_id));
 
-        Self { client, sequence_id }
+        Self {
+            client,
+            sequence_id,
+            database: config.database.clone(),
+            url: config.url.clone(),
+            username: config.username.clone(),
+            password: config.password.clone(),
+        }
     }
 }
 

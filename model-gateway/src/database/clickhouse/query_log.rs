@@ -26,7 +26,7 @@ pub async fn insert_log(client: &ClickHouseClient, log: &QueryLog) -> Result<(),
     let response_json = serde_json::to_string(&log.response_payload).unwrap_or_default();
 
     client.client
-        .query("INSERT INTO query_log VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .query("INSERT INTO query_logs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
         .bind(new_id)
         .bind(log.key_id.as_str())
         .bind(log.model.as_str())

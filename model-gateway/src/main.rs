@@ -15,7 +15,6 @@ use tokio::sync::Mutex;
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // * load config
     let config = init_config();
-    println!("Loaded {} upstreams from config", config.upstreams.len());
     println!("Listen on: {}", config.listen);
 
     // * initialize postgres if configured
