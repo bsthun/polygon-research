@@ -90,7 +90,7 @@ pub async fn handle(
             return Ok(res);
         }
     };
-    let body_str = String::from_utf8_lossy(&body_bytes);
+    let body_str = String::from_utf8_lossy(&body_bytes).to_string();
 
     // * extract model for logging
     let model = extract_model(&body_str).unwrap_or_default();
@@ -103,18 +103,30 @@ pub async fn handle(
     let upstream = &state.config.upstreams[0];
     let mut headers = reqwest::header::HeaderMap::new();
     headers.insert("Content-Type", "application/json".parse().unwrap());
-    let (target_base, path_suffix) = if path_v1.starts_with("/v1/messages") {
-        // * anthropic
+    let (target_base, path_suffix, forward_body) = if path_v1.starts_with("/v1/messages") {
+        // * anthropic – strip unsupported fields
+        const ANTHROPIC_DENYLIST: &[&str] = &["context_management"];
+        let filtered = serde_json::from_slice::<Value>(&body_bytes)
+            .map(|mut v| {
+                if let Some(obj) = v.as_object_mut() {
+                    for key in ANTHROPIC_DENYLIST {
+                        obj.remove(*key);
+                    }
+                }
+                serde_json::to_vec(&v).unwrap_or_else(|_| body_bytes.to_vec())
+            })
+            .unwrap_or_else(|_| body_bytes.to_vec());
         headers.insert("Authorization", format!("Bearer {}", upstream.key).parse().unwrap());
         headers.insert("x-api-key", upstream.key.parse().unwrap());
         headers.insert("anthropic-version", "2023-06-01".parse().unwrap());
-        (upstream.anthropic_endpoint.clone(), path_v1.to_string())
+        (upstream.anthropic_endpoint.clone(), path_v1.to_string(), Bytes::from(filtered))
     } else if path_v1.starts_with("/v1/responses") {
         // * openai
         headers.insert("Authorization", format!("Bearer {}", upstream.key).parse().unwrap());
         (
             upstream.openai_endpoint.clone(),
             path_v1.strip_prefix("/v1").unwrap_or(path_v1).to_string(),
+            body_bytes.clone(),
         )
     } else {
         // * openai
@@ -122,6 +134,7 @@ pub async fn handle(
         (
             upstream.openai_endpoint.clone(),
             path_v1.strip_prefix("/v1").unwrap_or(path_v1).to_string(),
+            body_bytes.clone(),
         )
     };
     let new_uri = format!("{}{}", target_base, path_suffix);
@@ -133,7 +146,7 @@ pub async fn handle(
     let proxy_req = client
         .post(&new_uri)
         .headers(headers)
-        .body(body_bytes.to_vec())
+        .body(forward_body.to_vec())
         .build()
         .unwrap();
 

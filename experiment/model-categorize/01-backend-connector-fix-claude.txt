@@ -1,0 +1,250 @@
+
+ ▐▛███▜▌   Claude Code v2.1.68
+▝▜█████▛▘  Sonnet 4.6 · API Usage Billing
+  ▘▘ ▝▝    /Volumes/Data/Place/ConnectedTech/repo/corpus-core
+
+  /model to try Opus 4.6
+
+❯ then list connector (from endpoint), I found that timeout took so long when mcp endpoint is unreachable. Fix to limit to 2 seconds per mcp and make it list parellelly      
+  (using go routine), also fix when connector used when user send chat message as well.                                                                                       
+
+∴ Thinking…
+
+  Let me explore the codebase to understand the structure and find the relevant files for the connector listing functionality.
+
+⏺ Explore(Explore connector and MCP endpoint code)
+  ⎿  Done (41 tool uses · 56.9k tokens · 1m 10s)
+  (ctrl+o to expand)
+
+∴ Thinking…
+
+  Now I have a clear picture of the code. Let me read the relevant files to understand the exact code I need to modify:
+
+  1. /Volumes/Data/Place/ConnectedTech/repo/corpus-core/backend/procedure/connector/proc_connector_list.go - Need to add parallel goroutines and 2s timeout per MCP
+  2. /Volumes/Data/Place/ConnectedTech/repo/corpus-core/backend/helper/connect/mcp.go - Need to add timeout to TestMcpConnection
+  3. /Volumes/Data/Place/ConnectedTech/repo/corpus-core/backend/service/chat/serve_chat_message.go - Need to fix MCP declarations fetching with timeout
+
+  Let me examine these files now.
+
+⏺ Read(procedure/connector/proc_connector_list.go)
+  ⎿  Read 58 lines
+
+⏺ Read(helper/connect/mcp.go)
+  ⎿  Read 20 lines
+
+⏺ Read(service/chat/serve_chat_message.go)
+  ⎿  Read 206 lines
+  ⎿  Loaded backend/CLAUDE.md
+
+∴ Thinking…
+
+  Now I understand the code clearly. I need to make 3 changes:
+
+  1. proc_connector_list.go: Run MCP connection tests in parallel using goroutines with 2-second timeout
+  2. mcp.go: Add 2-second timeout to TestMcpConnection
+  3. serve_chat_message.go: Add timeout handling when fetching MCP declarations (so chat doesn't hang on unreachable MCP endpoints)
+
+  Let me check how function.McpDeclarations works and if there's a way to pass context/timeout to it.
+
+  Let me look at the function package to understand what options are available.
+
+⏺ Let me check the function package to understand if it supports context/timeout:
+
+⏺ Bash(go doc go.scnd.dev/open/model/agentic/package/function McpDeclarations 2>&1 | head -30)
+  ⎿  doc: no such package: go.scnd.dev/open/model/agentic/package/function
+
+⏺ Bash(go doc go.scnd.dev/open/model/agentic/package/function McpOption 2>&1)
+  ⎿  Error: Exit code 1
+     doc: no such package: go.scnd.dev/open/model/agentic/package/function
+
+     doc: no such package: go.scnd.dev/open/model/agentic/package/function
+
+⏺ Bash(find $(go env GOPATH)/pkg/mod -path "*scnd.dev/open*" -name "*.go" 2>/dev/null | head -20; find /root/go -path "*scnd.dev*" 2>/dev/null | head -5)
+  ⎿  /Volumes/Data/Environment/go/pkg/mod/go.scnd.dev/open/polygon@v0.0.1/lib.go
+     /Volumes/Data/Environment/go/pkg/mod/go.scnd.dev/open/polygon@v0.0.1/command/pol/common/config/config.go
+     /Volumes/Data/Environment/go/pkg/mod/go.scnd.dev/open/polygon@v0.0.1/command/pol/index/config.go
+     /Volumes/Data/Environment/go/pkg/mod/go.scnd.dev/open/polygon@v0.0.1/command/pol/index/interface.go
+     /Volumes/Data/Environment/go/pkg/mod/go.scnd.dev/open/polygon@v0.0.1/command/pol/subcommand/database/sequel/parser_parse.go
+     /Volumes/Data/Environment/go/pkg/mod/go.scnd.dev/open/polygon@v0.0.1/command/pol/subcommand/database/sequel/parser_util.go
+     /Volumes/Data/Environment/go/pkg/mod/go.scnd.dev/open/polygon@v0.0.1/command/pol/subcommand/database/sequel/summary.go
+     /Volumes/Data/Environment/go/pkg/mod/go.scnd.dev/open/polygon@v0.0.1/command/pol/subcommand/database/sequel/parser_entity.go
+     /Volumes/Data/Environment/go/pkg/mod/go.scnd.dev/open/polygon@v0.0.1/command/pol/subcommand/database/sequel/querier.go
+     /Volumes/Data/Environment/go/pkg/mod/go.scnd.dev/open/polygon@v0.0.1/command/pol/subcommand/database/sequel/model.go
+     /Volumes/Data/Environment/go/pkg/mod/go.scnd.dev/open/polygon@v0.0.1/command/pol/subcommand/database/sequel/parser.go
+     /Volumes/Data/Environment/go/pkg/mod/go.scnd.dev/open/polygon@v0.0.1/command/pol/subcommand/database/sequel/schema.go
+     /Volumes/Data/Environment/go/pkg/mod/go.scnd.dev/open/polygon@v0.0.1/command/pol/subcommand/database/sequel/replace.go
+     /Volumes/Data/Environment/go/pkg/mod/go.scnd.dev/open/polygon@v0.0.1/command/pol/subcommand/database/sequel/querier_template.go
+     /Volumes/Data/Environment/go/pkg/mod/go.scnd.dev/open/polygon@v0.0.1/command/pol/subcommand/inter/interface.go
+     /Volumes/Data/Environment/go/pkg/mod/go.scnd.dev/open/polygon@v0.0.1/command/pol/main.go
+     /Volumes/Data/Environment/go/pkg/mod/go.scnd.dev/open/polygon@v0.0.1/external/sqlc/tracer/trace.go
+     /Volumes/Data/Environment/go/pkg/mod/go.scnd.dev/open/polygon@v0.0.1/external/sqlc/vet/vet.pb.go
+     /Volumes/Data/Environment/go/pkg/mod/go.scnd.dev/open/polygon@v0.0.1/external/sqlc/vet/vet_vtproto.pb.go
+     /Volumes/Data/Environment/go/pkg/mod/go.scnd.dev/open/polygon@v0.0.1/external/sqlc/cmd/generate.go
+
+⏺ Bash(cd /Volumes/Data/Place/ConnectedTech/repo/corpus-core/backend && cat go.mod | grep scnd)
+  ⎿     go.scnd.dev/open/model/agentic v0.3.0
+     replace go.scnd.dev/open/model/agentic => /Volumes/Data/Repo/model-agentic
+
+⏺ Search(pattern: "/Volumes/Data/Repo/model-agentic/package/function/*.go")
+  ⎿  Found 9 files (ctrl+o to expand)
+                                                                                                                                                                                  
+⏺ Read(/Volumes/Data/Repo/model-agentic/package/function/mcp_declaration.go)
+  ⎿  Read 135 lines                                                                                                                                                               
+                                                                                                                                                                                  
+⏺ Read(/Volumes/Data/Repo/model-agentic/package/function/mcp_client.go)                                                                                                           
+  ⎿  Read 73 lines                                                                                                                                                                
+                                                                                                                                                                                  
+∴ Thinking…                                                                                                                                                                       
+                                                                                                                                                                                  
+  Now I understand the full picture. McpDeclarations uses context.Background() internally, so there's no way to pass a timeout directly. But I can use the HttpClient field in    
+  McpOption to provide an HTTP client with a timeout!                                                                                                                           
+                                                                                                                                                                                  
+  The McpOption struct has an HttpClient *http.Client field, which gets passed to transport.WithHTTPBasicClient(option.HttpClient). So I can create an http.Client with a 2-second
+   timeout and pass it.                                                                                                                                                         
+
+  Now let me plan the fixes:
+
+  1. mcp.go (TestMcpConnection): Add http.Client with 2-second timeout to McpOption
+
+  2. proc_connector_list.go: Run MCP connection tests in parallel using goroutines
+  3. serve_chat_message.go: Apply the same 2-second timeout when fetching declarations during chat, and gracefully skip unreachable connectors instead of erroring out
+
+  For the chat service, I need to apply the timeout so it doesn't hang when an MCP is unreachable, and handle failures gracefully rather than blocking the entire chat response.
+
+  For proc_connector_list.go, I'll pre-populate the connector items first, then spin up goroutines to test each one in parallel. I'm completing the test by fetching MCP
+  declarations to verify the connection works, then I'll move on to parallelizing the connector list processing with goroutines and a WaitGroup to handle multiple connections
+  concurrently. I'm setting up the MCP option with a 2-second timeout on the HTTP client, then attempting to fetch declarations from the connector. If the connector is
+  unreachable or times out, I'll skip it rather than fail the entire chat operation, since that makes more sense for the user experience.
+
+⏺ Now I have everything I need. The McpOption supports HttpClient *http.Client, so I can inject a 2-second timeout HTTP client. Here's the plan:
+
+  1. mcp.go: Add 2s timeout HTTP client to TestMcpConnection                                                                                                                      
+  2. proc_connector_list.go: Test MCP connections in parallel with goroutines
+  3. serve_chat_message.go: Add 2s timeout when fetching declarations, skip unreachable connectors                                                                                
+                                                                                                                                                                                
+⏺ Update(/Volumes/Data/Place/ConnectedTech/repo/corpus-core/backend/helper/connect/mcp.go)                                                                                      
+  ⎿  Added 5 lines
+      2                                                                                                                                                                           
+      3  import (
+      4    "backend/type/tuple"                                                                                                                                                   
+      5 +  "net/http"                                                                                                                                                           
+      6 +  "time"                                                                                                                                                                 
+      7                                                                                                                                                                         
+      8    "github.com/bsthun/gut"                                                                                                                                              
+      9    "go.scnd.dev/open/model/agentic/package/function"
+     ...
+      13    mcpOption := &function.McpOption{
+      14      BaseUrl: mcpUrl.Url,
+      15      Header:  mcpUrl.Headers,
+      16 +    HttpClient: &http.Client{                                                                                                                                    
+      17 +      Timeout: 2 * time.Second,                                                                                                                                  
+      18 +    },                                                                                                                                                           
+      19    }
+      20  
+      21    // * test connection by fetching declarations
+
+⏺ Update(/Volumes/Data/Place/ConnectedTech/repo/corpus-core/backend/procedure/connector/proc_connector_list.go)
+  ⎿  Added 13 lines, removed 3 lines
+       4    "backend/generate/psql"                                                                                                                                               
+       5    "backend/helper/connect"
+       6    "backend/type/payload"                                                                                                                                                
+       7 +  "backend/type/tuple"                                                                                                                                                
+       8    "context"                                                                                                                                                             
+       9 +  "sync"                                                                                                                                                              
+      10                                                                                                                                                                        
+      11    "github.com/bsthun/gut"
+      12  )
+     ...
+      48        CreatedAt:   row.Connector.CreatedAt,
+      49        UpdatedAt:   row.Connector.UpdatedAt,
+      50      }
+      51 +  }                                                                                                                                                              
+      52  
+      50 -    // * test mcp connection for each connector                                                                                                                  
+      51 -    online := connect.TestMcpConnection(row.Connector.Mcp)                                                                                                       
+      52 -    connectorItems[i].Online = &online                                                                                                                           
+      53 +  // * test mcp connections in parallel                                                                                                                          
+      54 +  var wg sync.WaitGroup                                                                                                                                          
+      55 +  for i, row := range connectorRows {                                                                                                                            
+      56 +    wg.Add(1)                                                                                                                                                    
+      57 +    go func(i int, mcp *tuple.ConnectorMcp) {                                                                                                                    
+      58 +      defer wg.Done()                                                                                                                                            
+      59 +      online := connect.TestMcpConnection(mcp)                                                                                                                   
+      60 +      connectorItems[i].Online = &online                                                                                                                         
+      61 +    }(i, row.Connector.Mcp)                                                                                                                                      
+      62    }
+      63 +  wg.Wait()                                                                                                                                                      
+      64  
+      65    // * return
+      66    return connectorItems, countRow, nil
+
+⏺ Update(/Volumes/Data/Place/ConnectedTech/repo/corpus-core/backend/service/chat/serve_chat_message.go)
+  ⎿  Added 2 lines
+       7    "bufio"                                                                                                                                                               
+       8    "context"
+       9    "encoding/json"                                                                                                                                                       
+      10 +  "net/http"                                                                                                                                                          
+      11 +  "time"                                                                                                                                                                
+      12                                                                                                                                                                        
+      13    "github.com/bsthun/gut"                                                                                                                                             
+      14    "go.scnd.dev/open/model/agentic/package/agent"
+  ⎿  service/chat/serve_chat_message.go (file://):
+  ⎿    ✘ [Line 10:2] Unused import                      
+  ⎿    ✘ [Line 11:2] Unused import
+                                                                                                                                                                                  
+⏺ Update(/Volumes/Data/Place/ConnectedTech/repo/corpus-core/backend/service/chat/serve_chat_message.go)
+  ⎿  Added 4 lines, removed 1 line                                                                                                                                                
+      70      mcpOption := &function.McpOption{                                                                                                                                   
+      71        BaseUrl: connector.Mcp.Url,                                                                                                                                     
+      72        Header:  connector.Mcp.Headers,                                                                                                                                   
+      73 +      HttpClient: &http.Client{                                                                                                                                       
+      74 +        Timeout: 2 * time.Second,                                                                                                                                       
+      75 +      },                                                                                                                                                              
+      76      }                                                                                                                                                                 
+      77  
+      78      declarations, er := function.McpDeclarations(&connectorSource, mcpOption)
+      79      if er != nil {
+      77 -      return nil, gut.Err(false, "failed to fetch mcp declarations for connector "+*connector.Name, er)                                                          
+      80 +      continue                                                                                                                                                   
+      81      }
+      82  
+      83      for _, declaration := range declarations {
+  ⎿  service/chat/serve_chat_message.go (/Volumes/Data/Place/ConnectedTech/repo/corpus-core/backend/service/chat/serve_chat_message.go):
+  ⎿    ✘ [Line 10:2] "net/http" imported and not used [UnusedImport] (compiler)
+  ⎿    ✘ [Line 11:2] "time" imported and not used [UnusedImport] (compiler)
+                                                                                                                                                                                  
+∴ Thinking…                                             
+                                                                                                                                                                                  
+  Hmm, the diagnostics say net/http and time are not used. But I just added them and use them in the McpOption. Let me check the current state of the file to verify the import   
+  and usage are correct.                                                                                                                                                        
+                                                                                                                                                                                  
+⏺ Read(service/chat/serve_chat_message.go)                                                                                                                                      
+  ⎿  Read 85 lines                                                                                                                                                                
+                                                                                                                                                                                  
+∴ Thinking…                                                                                                                                                                     
+                                                                                                                                                                                  
+  The code looks correct. The diagnostics seem to be stale - the net/http and time imports ARE being used on lines 73-74. The diagnostics tool might be reporting old/stale state.
+   Let me verify the build actually compiles.                                                                                                                                     
+                                                                                                                                                                                  
+⏺ The imports look correct - the diagnostics appear stale. Let me verify by building:                                                                                             
+                                                                                                                                                                                
+⏺ Bash(go build ./... 2>&1)                                                                                                                                                       
+  ⎿  (No output)  
+                                                                                                                                                                                  
+⏺ Build succeeded. All three changes are in place:                                                                                                                              
+                                                                                                                                                                                  
+  helper/connect/mcp.go — Added 2s timeout HTTP client to TestMcpConnection                                                                                                       
+                                                                                                                                                                                  
+  procedure/connector/proc_connector_list.go — Connector list now tests all MCP endpoints in parallel using goroutines + sync.WaitGroup, so response time is bounded by the       
+  slowest single connector (2s) instead of N×10s                                                                                                                                  
+                                                                                                                                                                                
+  service/chat/serve_chat_message.go — Added 2s timeout HTTP client when fetching MCP declarations; unreachable connectors are now silently skipped (continue) instead of failing 
+  the entire chat request
+
+✻ Brewed for 4m 1s
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯  
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle)                                                                                                                     44049 tokens
+                                                                                                                                                current: 2.1.68 · latest: 2.1.68

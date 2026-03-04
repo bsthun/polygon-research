@@ -29,8 +29,8 @@ services:
       CLICKHOUSE_PASSWORD: model-gateway-1
       CLICKHOUSE_DB: modelgateway1
     cpus: 2.0
-    mem_limit: 2G
-    memswap_limit: 2G
+    mem_limit: 4G
+    memswap_limit: 4G
     restart: no
     logging:
       driver: none
