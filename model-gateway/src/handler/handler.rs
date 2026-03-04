@@ -99,27 +99,28 @@ pub async fn handle(
     // * strip prefix
     let path_v1 = path.strip_prefix("/api").unwrap_or(&path);
 
-    // * determine upstream endpoint based on path
+    // * determine upstream endpoint and build auth headers based on path
     let upstream = &state.config.upstreams[0];
-    let (target_base, auth_header, path_suffix) = if path_v1.starts_with("/v1/messages") {
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert("Content-Type", "application/json".parse().unwrap());
+    let (target_base, path_suffix) = if path_v1.starts_with("/v1/messages") {
         // * anthropic
-        (
-            upstream.anthropic_endpoint.clone(),
-            format!("Bearer {}", upstream.key),
-            path_v1.to_string(),
-        )
+        headers.insert("Authorization", format!("Bearer {}", upstream.key).parse().unwrap());
+        headers.insert("x-api-key", upstream.key.parse().unwrap());
+        headers.insert("anthropic-version", "2023-06-01".parse().unwrap());
+        (upstream.anthropic_endpoint.clone(), path_v1.to_string())
     } else if path_v1.starts_with("/v1/responses") {
         // * openai
+        headers.insert("Authorization", format!("Bearer {}", upstream.key).parse().unwrap());
         (
             upstream.openai_endpoint.clone(),
-            format!("Bearer {}", upstream.key),
             path_v1.strip_prefix("/v1").unwrap_or(path_v1).to_string(),
         )
     } else {
         // * openai
+        headers.insert("Authorization", format!("Bearer {}", upstream.key).parse().unwrap());
         (
             upstream.openai_endpoint.clone(),
-            format!("Bearer {}", upstream.key),
             path_v1.strip_prefix("/v1").unwrap_or(path_v1).to_string(),
         )
     };
@@ -131,8 +132,7 @@ pub async fn handle(
     // * create proxy request using reqwest
     let proxy_req = client
         .post(&new_uri)
-        .header("Content-Type", "application/json")
-        .header("Authorization", &auth_header)
+        .headers(headers)
         .body(body_bytes.to_vec())
         .build()
         .unwrap();
